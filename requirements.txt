@@ -1,0 +1,2 @@
+# The only runtime dependency. Everything else is the standard library.
+requests>=2.28

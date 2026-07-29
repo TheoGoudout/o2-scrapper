@@ -1,0 +1,23 @@
+# Credentials — never commit these
+.env
+*.pem
+*.json.secret
+
+# Scraper output (contains personal data: names, addresses, schedules)
+events.json
+raw.json
+raw_*.json
+out/
+
+# Google Calendar credentials, for the sync step
+credentials.json
+token.json
+service-account*.json
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
