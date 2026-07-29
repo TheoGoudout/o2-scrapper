@@ -1,14 +1,20 @@
-"""Scrape planned services from the O2 customer extranet (client.o2.fr).
+"""Mirror planned services from the O2 customer extranet into a Google Calendar.
 
-This package currently covers the read side only: authenticate, fetch the
-planning, and normalise it into stable records. Pushing those records into a
-Google Calendar is the next step and is intentionally not implemented yet.
+Read side: :mod:`o2sync.client` authenticates against client.o2.fr and fetches the
+planning, :mod:`o2sync.model` normalises it into stable records.
+
+Write side: :mod:`o2sync.sync` decides what to create, update and delete (pure
+logic, no network), :mod:`o2sync.gcal` performs it against Google Calendar, and
+:mod:`o2sync.gauth` handles credentials.
 """
 
 from .client import O2Client
 from .errors import (
     AccountDisabled,
     AuthError,
+    CalendarAPIError,
+    CalendarError,
+    GoogleAuthRequired,
     InvalidCredentials,
     NotACustomerAccount,
     O2Error,
@@ -34,5 +40,8 @@ __all__ = [
     "PasswordUpdateRequired",
     "ServiceUnavailable",
     "TransportError",
+    "CalendarError",
+    "CalendarAPIError",
+    "GoogleAuthRequired",
     "__version__",
 ]

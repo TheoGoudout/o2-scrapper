@@ -1,91 +1,157 @@
 # o2-scrapper
 
-Fetches your planned services (ménage, garde d'enfants, jardinage, …) from the O2
-customer extranet at [client.o2.fr](https://client.o2.fr) and emits them as JSON.
+Mirrors your planned services (ménage, garde d'enfants, jardinage, …) from the O2
+customer extranet at [client.o2.fr](https://client.o2.fr) into a dedicated Google
+Calendar.
 
-This is the first half of the goal: mirroring the O2 planning into a dedicated
-Google Calendar, updating existing events when a service is rescheduled or
-cancelled rather than recreating them. **The Google Calendar side is not
-implemented yet** — see [Next step](#next-step).
+Services change state over time — cancelled, reprogrammed, reassigned to a
+different intervenant — so existing calendar events are **updated in place, never
+recreated**. Cancelled services stay visible and marked; services that disappear
+from the O2 planning are removed.
 
 ## Install
 
 ```bash
-pip install -r requirements.txt   # just `requests`
+pip install -r requirements.txt
 ```
 
-Python 3.9+ (uses `zoneinfo`). No virtualenv is required, but it doesn't hurt.
+Python 3.9+ (uses `zoneinfo`).
 
-## Usage
+## Quick start
 
 ```bash
-cp .env.example .env && $EDITOR .env      # or export O2_EMAIL / O2_PASSWORD
+cp .env.example .env && $EDITOR .env    # O2 credentials
 
-python -m o2sync --pretty                 # last 30 days + next 90, to stdout
-python -m o2sync -o events.json --pretty  # to a file
-python -m o2sync --start 2026-01-01 --end 2026-12-31 -o year.json
-python -m o2sync --dump-raw raw.json -o events.json   # keep the untouched API response
+python -m o2sync fetch --pretty         # 1. check the O2 side works
+python -m o2sync auth                   # 2. one-time Google authorisation (opens a browser)
+python -m o2sync sync --dry-run         # 3. see exactly what would change
+python -m o2sync sync                   # 4. do it
 ```
 
-Credentials are read from `--email`/`--password`, then `O2_EMAIL`/`O2_PASSWORD`,
-then `.env`, then an interactive prompt. Prefer the environment or `.env`:
-arguments on the command line are visible to other processes on the machine.
+`--dry-run` prints one line per change and writes nothing:
 
-Useful flags: `--include-raw` (embed each event's original payload),
-`--no-labels` (skip the two label lookups and use the built-in French labels),
-`--chunk-days N` (split the window into several requests), `-v` / `-q`.
-
-Exit codes: `0` success, `2` authentication problem (a human must act), `3` O2
-unreachable or failing (worth retrying later), `1` anything else.
-
-### Output
-
-```json
-{
-  "generated_at": "2026-07-29T19:12:03.914+02:00",
-  "source": "client.o2.fr",
-  "timezone": "Europe/Paris",
-  "window": { "start": "2026-06-29T00:00:00+02:00", "end": "2026-10-27T23:59:59+02:00" },
-  "count": 18,
-  "services": [
-    {
-      "event_id": "730187168",
-      "start": "2026-07-14T11:30:00+02:00",
-      "end": "2026-07-14T13:30:00+02:00",
-      "actual_end": "2026-07-14T13:30:00+02:00",
-      "duration_planned_min": 120,
-      "duration_done_min": null,
-      "status": "annul_cli_ok",
-      "status_label": "Annulée dans les délais",
-      "is_cancelled": true,
-      "is_postponed": true,
-      "service_type": "menage_repassage",
-      "service_type_label": "ménage - repassage",
-      "category": "menage",
-      "colour": "#999999",
-      "is_mandataire": false,
-      "level": "M2",
-      "level_label": "M2 (Ménage Confort)",
-      "city": "Lyon 1er Arrondissement",
-      "worker": { "civility": "mme", "first_name": "…", "last_name": "…", "display_name": "…" },
-      "house_service_id": "730187147",
-      "customer_id": "…",
-      "contract_ref": "O2C…",
-      "series_id": "…",
-      "summary": "[ANNULÉ] ménage - repassage",
-      "content_hash": "9f2c…"
-    }
-  ]
-}
+```
+CREATE    2026-06-30 11:34 Ménage - repassage — Magda
+CREATE    2026-07-14 11:30 [ANNULÉ] Ménage - repassage — Magda
+UPDATE    2026-07-21 14:29 Ménage - repassage — Magda (content changed)
+DELETE    [ANNULÉ] Ménage - repassage — Nadia (no longer in the O2 planning)
 ```
 
-`event_id` is stable across runs even when a service moves, so it is the key a
-calendar sync should use. `content_hash` covers only the fields a calendar event
-would display — compare it to decide "update" versus "nothing changed". Labels are
-deliberately excluded from the hash so a change in O2's wording cannot trigger
-pointless calendar updates.
+## Commands
 
-## The API
+### `fetch` — the planning as JSON
+
+```bash
+python -m o2sync fetch --pretty                       # to stdout
+python -m o2sync fetch -o events.json --pretty        # to a file
+python -m o2sync fetch --start 2026-01-01 --end 2026-12-31 -o year.json
+python -m o2sync fetch --dump-raw raw.json -o events.json
+```
+
+Window defaults to 30 days back and 90 days forward (`--days-back` /
+`--days-forward`). Other flags: `--include-raw`, `--no-labels`, `--chunk-days N`,
+`-v` / `-q`.
+
+### `sync` — into Google Calendar
+
+```bash
+python -m o2sync sync --dry-run
+python -m o2sync sync --calendar-name "Prestations O2"
+python -m o2sync sync --from-json raw.json --dry-run   # replay a dump, no O2 login
+```
+
+Same window flags as `fetch`. The dedicated calendar is created on first run
+(named `O2 – Prestations` unless `--calendar-name` says otherwise); `--calendar-id`
+targets one directly.
+
+### `auth` — one-time Google authorisation
+
+```bash
+python -m o2sync auth              # opens a browser, stores token.json
+python -m o2sync auth --print-env  # re-print the credentials as env vars
+```
+
+## Google setup
+
+1. In [Google Cloud Console](https://console.cloud.google.com/), create a project.
+2. Enable the **Google Calendar API**.
+3. Under *APIs & Services → Credentials*, create an **OAuth client ID** of type
+   **Desktop app**, and download it as `credentials.json` next to the code.
+4. On the OAuth consent screen, add your own address as a test user.
+5. Run `python -m o2sync auth`.
+
+The only scope requested is
+[`calendar.app.created`](https://developers.google.com/calendar/api/auth): *make
+secondary calendars, and manage events on them*. This tool therefore **cannot read
+or modify your primary calendar, or any other calendar you own** — it can only
+touch the one it created itself. The trade-off is that it cannot adopt a calendar
+you made by hand; let it create its own.
+
+## Credentials
+
+| Variable | Purpose |
+| --- | --- |
+| `O2_EMAIL`, `O2_PASSWORD` | O2 account |
+| `O2_GOOGLE_CLIENT_ID`, `O2_GOOGLE_CLIENT_SECRET`, `O2_GOOGLE_REFRESH_TOKEN` | Google, without any file on disk |
+| `O2_GOOGLE_CLIENT_SECRETS`, `O2_GOOGLE_TOKEN` | alternative paths to `credentials.json` / `token.json` |
+
+O2 credentials are read from flags, then the environment, then `.env`, then an
+interactive prompt. Prefer the environment: command-line arguments are visible to
+other processes.
+
+Google credentials come from the three environment variables if present, otherwise
+from `token.json`. The environment path needs no writable disk, which is what makes
+scheduled containers work — see below.
+
+## Running it on a schedule
+
+The tool is a single-shot command: it runs, syncs, and exits. Run it a few times a
+day; the O2 planning does not change faster than that.
+
+### Coolify (recommended if you have it)
+
+You already have a Docker host, and this is the only option that runs the real,
+tested code. A `Dockerfile` is included.
+
+1. Locally, once: `python -m o2sync auth` then `python -m o2sync auth --print-env`.
+2. In Coolify, create a new resource from this Git repository.
+3. Set `O2_EMAIL`, `O2_PASSWORD` and the three `O2_GOOGLE_*` variables as secrets.
+4. Make it a **Scheduled task** (not a long-running service) with, say, `0 */6 * * *`
+   and command `sync`.
+
+The container writes nothing to disk and runs as a non-root user, so it is safe to
+run read-only.
+
+Plain cron on any box works the same way:
+
+```cron
+0 */6 * * * cd /opt/o2-scrapper && /usr/bin/python3 -m o2sync sync -q >> /var/log/o2sync.log 2>&1
+```
+
+### n8n
+
+Two options, depending on how you self-host it:
+
+- **Execute Command node** — if n8n runs where this code is installed, schedule a
+  Cron trigger into an Execute Command node running `python -m o2sync sync`. Simple
+  and keeps the tested logic. Not available on n8n Cloud.
+- **Rebuild the flow natively** — n8n has HTTP Request nodes and a Google Calendar
+  node, so you *can* rebuild this without Python: POST `ask_login`, POST
+  `get_planning_events`, then a Code node for the diff. Be aware that the diff is
+  the hard part — matching on the O2 `eventId`, comparing a content hash, and
+  fencing deletions to the queried window — and that is exactly what
+  `o2sync/sync.py` already does and has tests for. Rebuilding it in a Code node
+  means reimplementing that logic without the tests.
+
+### Make.com
+
+Honestly: a poor fit. There is no arbitrary code execution, so the whole diff
+engine would have to be rebuilt out of Data Store modules and routers. You would
+spend more effort than the Coolify route and end up with something harder to
+change. If you want to avoid a server entirely, a GitHub Actions scheduled workflow
+with the five secrets is a closer match, and free.
+
+## The O2 API
 
 The extranet is a WordPress site whose planning screen is driven entirely by
 `admin-ajax.php`, so **nothing here parses HTML**. The endpoints below were read
@@ -144,9 +210,9 @@ lastName  firstName  civility  hsCliSerialNumber  hsCity
 | `annul_empl` | Annulée par l'intervenant | yes |
 
 `annul_empl` appears in live data but is **not** handled by the site's own
-JavaScript, which renders it with its catch-all "Non réalisable". Unknown codes
-are treated the same way here — labelled "Non réalisable", counted as cancelled,
-and logged once per run so a new status doesn't pass unnoticed.
+JavaScript, which renders it with its catch-all "Non réalisable". Unknown codes are
+treated the same way here — labelled "Non réalisable", counted as cancelled, and
+logged once per run so a new status doesn't pass unnoticed.
 
 ### Notes on behaviour
 
@@ -156,14 +222,54 @@ and logged once per run so a new status doesn't pass unnoticed.
 - The label endpoints echo the code back when they don't recognise it, so an
   unknown code is indistinguishable from a valid one — both are usable as labels.
 
+## How the sync stays idempotent
+
+- Each calendar event stores `o2EventId`, `o2ContentHash`, `o2Status` and an
+  `o2Source` marker in `extendedProperties.private`. **The calendar is its own
+  state store** — there is no local state file to lose or desync, and moving the
+  tool to another machine changes nothing.
+- Every read filters on `o2Source`, so the tool can only ever see, update or delete
+  events it created.
+- Calendar event ids are derived deterministically from the O2 `eventId`
+  (`"o2" + sha1(...)`, which fits Google's `[a-v0-9]` id charset).
+- An event is rewritten only when its stored `o2ContentHash` differs from the
+  freshly computed one. The hash deliberately excludes labels, so a change in O2's
+  wording cannot trigger pointless calendar updates.
+- Deletion is fenced three ways: the event must carry our marker, its start must
+  fall **inside the window that was queried**, and its `o2EventId` must be absent
+  from the fetched planning. A narrow `--start/--end` run therefore cannot touch
+  services outside it.
+- Deleting a Google event reserves its id permanently, so creation falls back to
+  an update on `409` — a service removed from O2 that later comes back syncs
+  cleanly instead of failing forever.
+
+Cancelled services keep their event but are retitled `[ANNULÉ] …`, greyed, marked
+*free* so they don't make you look busy, and stripped of reminders so a service
+that isn't happening never notifies you.
+
 ## Tests
 
 ```bash
 python -m unittest discover -s tests -t .
 ```
 
-They cover normalisation only and hit no network. Fixtures mirror a real payload
-but every value is synthetic — no personal data is committed to this repository.
+52 tests, no network: normalisation, the calendar event mapping, and every branch
+of the diff engine including the deletion fences and the `409` fallback. Fixtures
+mirror a real payload but every value is synthetic — no personal data is committed
+to this repository.
+
+## Troubleshooting
+
+- **`pyo3_runtime.PanicException` importing `cryptography`** — a distro-packaged
+  `cryptography` is shadowing the one the Google libraries need. Fix with
+  `pip install --upgrade --ignore-installed cryptography`, or use a virtualenv.
+- **`Google authorisation needed`** (exit 2) — the token is missing, corrupt, or
+  was revoked. Run `python -m o2sync auth` again.
+- **Exit code 3** — O2 or Google was unreachable or failing. Transient; the next
+  scheduled run will pick it up.
+
+Exit codes: `0` success, `2` authentication problem (a human must act), `3` remote
+service unreachable or failing (worth retrying), `1` anything else.
 
 ## Scope and etiquette
 
@@ -172,15 +278,5 @@ with O2, who confirmed that a single customer reading their own planning is fine
 This tool makes a handful of requests per run against one account, and is not
 intended for anything broader.
 
-Output files contain personal data (names of the people assigned to your home,
-your city, contract references) and are git-ignored.
-
-## Next step
-
-Google Calendar sync, deferred until the JSON above has been reviewed and an auth
-method is chosen (OAuth refresh token, or a service account with the calendar
-shared to it). The plan is to key events off `event_id` — a deterministic calendar
-event id plus `o2EventId`/`content_hash` in `extendedProperties` — so the calendar
-itself is the state store and no local file can drift. Cancelled services stay on
-the calendar marked `[ANNULÉ]`; services that vanish from O2 entirely get deleted.
-`Service.summary` and `Service.content_hash()` already exist for that purpose.
+Output files contain personal data (names of the people assigned to your home, your
+city, contract references) and are git-ignored, as are all credential files.

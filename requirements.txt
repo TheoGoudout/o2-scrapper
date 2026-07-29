@@ -1,2 +1,7 @@
-# The only runtime dependency. Everything else is the standard library.
+# O2 side.
 requests>=2.28
+
+# Google Calendar side (official client libraries).
+google-api-python-client>=2.100
+google-auth>=2.23
+google-auth-oauthlib>=1.1

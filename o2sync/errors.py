@@ -47,3 +47,19 @@ class ServiceUnavailable(O2Error):
 
 class SessionExpired(O2Error):
     """The PHP session is no longer authenticated. Internal; triggers one re-login."""
+
+
+class CalendarError(Exception):
+    """Base class for the Google Calendar side."""
+
+
+class GoogleAuthRequired(CalendarError):
+    """No usable Google credentials.
+
+    Raised instead of opening a browser: ``sync`` has to be safe to run from cron,
+    so the one-time consent lives in the ``auth`` subcommand only.
+    """
+
+
+class CalendarAPIError(CalendarError):
+    """The Google Calendar API rejected a request we could not recover from."""
