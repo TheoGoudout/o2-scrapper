@@ -9,12 +9,16 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
+import signal
 import sys
+import threading
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from . import __version__
+from . import __version__, heartbeat
 from .client import O2Client
 from .config import resolve_credentials
 from .errors import (
@@ -33,6 +37,36 @@ EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_AUTH = 2
 EXIT_UNAVAILABLE = 3
+
+#: Below this, a scheduled loop would just hammer O2 for no benefit — the planning
+#: does not change minute to minute.
+MIN_INTERVAL_SECONDS = 60
+
+_INTERVAL_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+
+
+def parse_interval(value: str) -> int:
+    """Parse ``30m`` / ``6h`` / ``1d`` / ``3600`` into seconds."""
+    text = str(value).strip().lower()
+    if not text:
+        raise SystemExit("Empty --interval: use something like 6h.")
+
+    unit = 1
+    if text[-1] in _INTERVAL_UNITS:
+        unit = _INTERVAL_UNITS[text[-1]]
+        text = text[:-1]
+
+    try:
+        amount = float(text)
+    except ValueError:
+        raise SystemExit(f"Invalid --interval {value!r}: use e.g. 30m, 6h, 1d.") from None
+
+    seconds = int(amount * unit)
+    if seconds < MIN_INTERVAL_SECONDS:
+        raise SystemExit(
+            f"--interval {value!r} is too short; the minimum is {MIN_INTERVAL_SECONDS}s."
+        )
+    return seconds
 
 
 # --------------------------------------------------------------------- arguments
@@ -146,8 +180,32 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="skip the label lookups and use the built-in French labels only",
     )
+    schedule = sync.add_argument_group("scheduling")
+    schedule.add_argument(
+        "--interval",
+        default=os.environ.get("O2_SYNC_INTERVAL"),
+        help="keep running and re-sync every INTERVAL (e.g. 30m, 6h, 1d), or set "
+        "$O2_SYNC_INTERVAL. Without this the command syncs once and exits.",
+    )
+    schedule.add_argument(
+        "--heartbeat-file",
+        help=f"liveness file written each cycle in --interval mode "
+        f"(default: {heartbeat.DEFAULT_PATH}, or $O2_HEARTBEAT_FILE)",
+    )
     _add_verbosity(sync)
     sync.set_defaults(handler=cmd_sync)
+
+    healthcheck = subparsers.add_parser(
+        "healthcheck",
+        help="report whether a --interval sync loop is still alive",
+        description="Exits 0 while the sync loop is running on schedule, 1 once its "
+        "heartbeat goes stale. Used as the container HEALTHCHECK.",
+    )
+    healthcheck.add_argument(
+        "--heartbeat-file", help=f"path to check (default: {heartbeat.DEFAULT_PATH})"
+    )
+    _add_verbosity(healthcheck)
+    healthcheck.set_defaults(handler=cmd_healthcheck)
 
     auth = subparsers.add_parser(
         "auth",
@@ -283,7 +341,8 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def cmd_sync(args: argparse.Namespace) -> int:
+def _sync_once(args: argparse.Namespace) -> str:
+    """Run one full synchronisation and return its summary line."""
     from . import gauth, gcal, sync as sync_module
 
     start, end = resolve_window(args)
@@ -315,7 +374,76 @@ def cmd_sync(args: argparse.Namespace) -> int:
 
     prefix = "[dry-run] " if args.dry_run else ""
     log.info("%s%s", prefix, plan.summary())
+    return plan.summary()
+
+
+def _sync_loop(args: argparse.Namespace, interval: int) -> int:
+    """Sync on a schedule until told to stop.
+
+    This exists because Coolify (and most container platforms) apply a
+    restart-always policy: a container that syncs once and exits is treated as a
+    crash and restarted forever. Staying alive and sleeping between cycles is what
+    makes the deployment well-behaved.
+    """
+    stop = threading.Event()
+
+    def _request_stop(signum: int, _frame: Any) -> None:
+        log.info("Received %s, shutting down.", signal.Signals(signum).name)
+        stop.set()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _request_stop)
+        except ValueError:  # pragma: no cover - not on the main thread
+            log.debug("Could not install a handler for %s", sig)
+
+    heartbeat_path = heartbeat.resolve_path(args.heartbeat_file)
+    # A scheduled container has no terminal to prompt at.
+    args.no_prompt = True
+
+    log.info("Syncing every %ss. Heartbeat: %s", interval, heartbeat_path)
+
+    while True:
+        started = time.monotonic()
+        try:
+            summary = _sync_once(args)
+            heartbeat.write(heartbeat_path, interval, "ok", summary)
+        except (AuthError, GoogleAuthRequired) as exc:
+            # Credentials will not fix themselves, and retrying would just hammer
+            # the API until somebody notices. Exit loudly instead.
+            log.error("Authentication failed, stopping: %s", exc)
+            heartbeat.write(heartbeat_path, interval, "auth-error", str(exc))
+            return EXIT_AUTH
+        except (ServiceUnavailable, TransportError, CalendarAPIError) as exc:
+            log.warning("Sync failed, retrying at the next cycle: %s", exc)
+            heartbeat.write(heartbeat_path, interval, "error", str(exc))
+        except O2Error as exc:
+            log.error("Sync failed, retrying at the next cycle: %s", exc)
+            heartbeat.write(heartbeat_path, interval, "error", str(exc))
+
+        if stop.is_set():
+            break
+        # Sleep the remainder of the interval so a slow run doesn't push the
+        # schedule later and later.
+        remaining = max(0.0, interval - (time.monotonic() - started))
+        if stop.wait(remaining):
+            break
+
+    log.info("Stopped.")
     return EXIT_OK
+
+
+def cmd_sync(args: argparse.Namespace) -> int:
+    if not args.interval:
+        _sync_once(args)
+        return EXIT_OK
+    return _sync_loop(args, parse_interval(args.interval))
+
+
+def cmd_healthcheck(args: argparse.Namespace) -> int:
+    healthy, message = heartbeat.check(heartbeat.resolve_path(args.heartbeat_file))
+    print(message)
+    return EXIT_OK if healthy else EXIT_ERROR
 
 
 def cmd_auth(args: argparse.Namespace) -> int:

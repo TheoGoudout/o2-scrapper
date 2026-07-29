@@ -58,11 +58,19 @@ Window defaults to 30 days back and 90 days forward (`--days-back` /
 python -m o2sync sync --dry-run
 python -m o2sync sync --calendar-name "Prestations O2"
 python -m o2sync sync --from-json raw.json --dry-run   # replay a dump, no O2 login
+python -m o2sync sync --interval 6h                    # stay alive, re-sync every 6h
 ```
 
 Same window flags as `fetch`. The dedicated calendar is created on first run
 (named `O2 – Prestations` unless `--calendar-name` says otherwise); `--calendar-id`
-targets one directly.
+targets one directly. `--interval` turns it into a long-running loop — see
+[Running it on a schedule](#running-it-on-a-schedule).
+
+### `healthcheck` — is the loop alive?
+
+```bash
+python -m o2sync healthcheck   # exit 0 while the --interval loop is on schedule
+```
 
 ### `auth` — one-time Google authorisation
 
@@ -94,6 +102,8 @@ you made by hand; let it create its own.
 | `O2_EMAIL`, `O2_PASSWORD` | O2 account |
 | `O2_GOOGLE_CLIENT_ID`, `O2_GOOGLE_CLIENT_SECRET`, `O2_GOOGLE_REFRESH_TOKEN` | Google, without any file on disk |
 | `O2_GOOGLE_CLIENT_SECRETS`, `O2_GOOGLE_TOKEN` | alternative paths to `credentials.json` / `token.json` |
+| `O2_SYNC_INTERVAL` | re-sync every N (`6h`); makes `sync` a long-running loop |
+| `O2_HEARTBEAT_FILE` | where the loop writes its liveness file |
 
 O2 credentials are read from flags, then the environment, then `.env`, then an
 interactive prompt. Prefer the environment: command-line arguments are visible to
@@ -105,24 +115,68 @@ scheduled containers work — see below.
 
 ## Running it on a schedule
 
-The tool is a single-shot command: it runs, syncs, and exits. Run it a few times a
-day; the O2 planning does not change faster than that.
+`sync` runs once and exits by default. Give it `--interval` (or `$O2_SYNC_INTERVAL`)
+and it stays alive, re-syncing on that schedule:
 
-### Coolify (recommended if you have it)
+```bash
+python -m o2sync sync --interval 6h
+```
 
-You already have a Docker host, and this is the only option that runs the real,
-tested code. A `Dockerfile` is included.
+In loop mode it survives transient failures — an O2 or Google outage is logged and
+retried at the next cycle rather than killing the process — and it stops promptly
+and cleanly on `SIGTERM`. Bad credentials are treated as fatal instead: it exits 2
+rather than hammering the login endpoint until somebody notices.
 
-1. Locally, once: `python -m o2sync auth` then `python -m o2sync auth --print-env`.
-2. In Coolify, create a new resource from this Git repository.
-3. Set `O2_EMAIL`, `O2_PASSWORD` and the three `O2_GOOGLE_*` variables as secrets.
-4. Make it a **Scheduled task** (not a long-running service) with, say, `0 */6 * * *`
-   and command `sync`.
+### Coolify
 
-The container writes nothing to disk and runs as a non-root user, so it is safe to
-run read-only.
+**Why a one-shot container does not work here:** Coolify hardcodes
+`restart: unless-stopped` on applications
+([discussion](https://github.com/coollabsio/coolify/discussions/3447)), so a
+container that syncs and exits looks like a crash and gets restarted in a loop
+forever. Coolify's own *Scheduled Tasks* can't rescue that either — they are
+`docker exec` into an **already-running** container
+([discussion](https://github.com/coollabsio/coolify/discussions/3152),
+[issue](https://github.com/coollabsio/coolify/issues/8500)). So the container has
+to stay up and own its schedule, which is what `--interval` is for. The bundled
+`Dockerfile` defaults to it.
 
-Plain cron on any box works the same way:
+1. Locally, once: `python -m o2sync auth`, then `python -m o2sync auth --print-env`.
+2. In Coolify: **+ New → Resource → your Git repository**, build pack
+   **Docker Compose** (the repo has a `docker-compose.yaml`).
+3. In *Environment Variables*, set `O2_EMAIL`, `O2_PASSWORD` and the three
+   `O2_GOOGLE_*` values from step 1. Optionally `O2_SYNC_INTERVAL` (default `6h`).
+4. Deploy. The container should stay **running**, logging one summary line per
+   cycle.
+
+The container needs no volumes and no ports — sync state lives in the Google
+Calendar itself — and runs read-only as a non-root user.
+
+To force a sync between cycles, add a Coolify **Scheduled Task** with command
+`python -m o2sync sync` (it `docker exec`s into the running container). Coolify
+accepts standard five-field cron plus shorthands like `@daily`
+([syntax](https://coolify.io/docs/knowledge-base/cron-syntax)).
+
+### Health check
+
+The image ships a `HEALTHCHECK` that runs `python -m o2sync healthcheck`. The loop
+writes a small JSON heartbeat after every cycle, recording the interval it is
+running at, and the check works out its own staleness allowance from that
+(2 × interval + 5 min) — so it stays correct whatever you set `O2_SYNC_INTERVAL` to.
+
+It reports **liveness, not last-sync-success**: a failed cycle still refreshes the
+heartbeat, because restarting the container cannot fix O2 or Google being down.
+Only a genuinely wedged loop goes unhealthy. Check it by hand with:
+
+```bash
+python -m o2sync healthcheck        # "alive, last cycle 42s ago (ok)"
+```
+
+If Coolify's proxy complains about health checks, disable them in the UI — this is
+not a web service and nothing routes to it.
+
+### Plain cron
+
+If you'd rather not keep a process alive, the one-shot mode is still there:
 
 ```cron
 0 */6 * * * cd /opt/o2-scrapper && /usr/bin/python3 -m o2sync sync -q >> /var/log/o2sync.log 2>&1
@@ -133,8 +187,9 @@ Plain cron on any box works the same way:
 Two options, depending on how you self-host it:
 
 - **Execute Command node** — if n8n runs where this code is installed, schedule a
-  Cron trigger into an Execute Command node running `python -m o2sync sync`. Simple
-  and keeps the tested logic. Not available on n8n Cloud.
+  Cron trigger into an Execute Command node running `python -m o2sync sync` (the
+  one-shot mode, no `--interval`). Simple, and keeps the tested logic. Not available
+  on n8n Cloud.
 - **Rebuild the flow natively** — n8n has HTTP Request nodes and a Google Calendar
   node, so you *can* rebuild this without Python: POST `ask_login`, POST
   `get_planning_events`, then a Code node for the diff. Be aware that the diff is
@@ -253,8 +308,10 @@ that isn't happening never notifies you.
 python -m unittest discover -s tests -t .
 ```
 
-52 tests, no network: normalisation, the calendar event mapping, and every branch
-of the diff engine including the deletion fences and the `409` fallback. Fixtures
+72 tests, no network: normalisation, the calendar event mapping, every branch of the
+diff engine including the deletion fences and the `409` fallback, and the scheduling
+loop (interval parsing, surviving a transient outage, fatal-on-bad-credentials,
+`SIGTERM` shutdown, heartbeat staleness). Fixtures
 mirror a real payload but every value is synthetic — no personal data is committed
 to this repository.
 

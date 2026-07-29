@@ -1,0 +1,34 @@
+# Deployment for Coolify (build pack: Docker Compose) or plain `docker compose up -d`.
+#
+# The container stays running and syncs every $O2_SYNC_INTERVAL. Set the secrets
+# below in Coolify's Environment Variables tab — do not commit them.
+services:
+  o2sync:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      # O2 account.
+      O2_EMAIL: ${O2_EMAIL}
+      O2_PASSWORD: ${O2_PASSWORD}
+      # Google, from `python -m o2sync auth --print-env` on your machine.
+      O2_GOOGLE_CLIENT_ID: ${O2_GOOGLE_CLIENT_ID}
+      O2_GOOGLE_CLIENT_SECRET: ${O2_GOOGLE_CLIENT_SECRET}
+      O2_GOOGLE_REFRESH_TOKEN: ${O2_GOOGLE_REFRESH_TOKEN}
+      # How often to re-sync, and how much of the planning to cover.
+      O2_SYNC_INTERVAL: ${O2_SYNC_INTERVAL:-6h}
+      O2_HEARTBEAT_FILE: /tmp/o2sync-heartbeat.json
+    healthcheck:
+      test: ["CMD", "python", "-m", "o2sync", "healthcheck"]
+      interval: 5m
+      timeout: 15s
+      start_period: 2m
+      retries: 3
+    # No volumes and no ports: state lives in the Google Calendar itself, and
+    # there is nothing to serve.
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
