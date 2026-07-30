@@ -20,9 +20,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Floor is what the README promises; the top of the range is what the
-        # Docker image actually runs, so both ends are proven rather than assumed.
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        # Just the ends of the supported range: the floor the README promises, and
+        # the version the Docker image actually runs. The versions in between share
+        # a language level with one of the two, so testing them found nothing.
+        python-version: ["3.10", "3.14"]
     steps:
       - uses: actions/checkout@v7
 

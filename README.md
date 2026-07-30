@@ -448,7 +448,7 @@ loop (interval parsing, surviving a transient outage, fatal-on-bad-credentials,
 `SIGTERM` shutdown, heartbeat staleness), and credential handling (wrong OAuth client
 type, corrupt token, headless machine).
 
-CI runs them on Python 3.10–3.14, lints with `ruff`, builds the Docker image and
+CI runs them on Python 3.10 and 3.14, lints with `ruff`, builds the Docker image and
 smoke-tests the container. Fixtures
 mirror a real payload but every value is synthetic — no personal data is committed
 to this repository.
