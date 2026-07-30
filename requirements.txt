@@ -1,5 +1,5 @@
 # O2 side.
-requests>=2.28
+requests>=2.34.2
 
 # Google Calendar side (official client libraries).
 google-api-python-client>=2.198.0
