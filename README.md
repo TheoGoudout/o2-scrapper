@@ -129,6 +129,43 @@ Because the app is published but unverified, the consent screen will say
 users, which is 99 more than you need. You do not need to submit for verification,
 and you do not need to add test users at all once the app is published.
 
+### No computer? Browser-only setup
+
+`python -m o2sync auth` needs a browser *and* a loopback listener on the same
+machine, so it can't be done from a phone. You can get the same three credentials
+using [Google's OAuth Playground](https://developers.google.com/oauthplayground/),
+which needs nothing installed — the tool never has to run locally at all, because
+the server reads its Google credentials from environment variables.
+
+Instead of steps 5–6 above:
+
+1. *Google Auth Platform → **Data Access*** → *Add or remove scopes* → paste
+   `https://www.googleapis.com/auth/calendar.app.created` and save.
+2. *Google Auth Platform → **Clients*** → *Create client* → application type
+   **Web application** (not Desktop — the Playground needs a real redirect URI).
+   Under *Authorised redirect URIs* add exactly:
+   `https://developers.google.com/oauthplayground`
+   Save, and keep the **Client ID** and **Client secret**.
+3. Open [the Playground](https://developers.google.com/oauthplayground/), tap the
+   **⚙ gear** (top right) and set:
+   - *OAuth flow*: **Server-side**
+   - *Access type*: **Offline** — without this you get no refresh token
+   - tick **Use your own OAuth credentials**, and paste the client ID and secret
+4. In *Step 1*, in the "Input your own scopes" box, enter
+   `https://www.googleapis.com/auth/calendar.app.created` → **Authorize APIs**.
+   Sign in and accept (via **Advanced → Go to … (unsafe)** on the unverified-app
+   warning).
+5. In *Step 2*, tap **Exchange authorization code for tokens** and copy the
+   **refresh token**.
+6. In Coolify's *Environment Variables*, set `O2_GOOGLE_CLIENT_ID`,
+   `O2_GOOGLE_CLIENT_SECRET` and `O2_GOOGLE_REFRESH_TOKEN` to those three values,
+   along with `O2_EMAIL` and `O2_PASSWORD`. Deploy.
+
+A Web-application client works fine here: refreshing a token only needs the client
+id, secret and refresh token, and is identical for both client types. You never
+need `credentials.json` or `token.json` on the server. Publishing the app (step 4
+above) still matters — a *Testing* app's refresh token dies after 7 days either way.
+
 The only scope requested is
 [`calendar.app.created`](https://developers.google.com/calendar/api/auth): *make
 secondary calendars, and manage events on them*. This tool therefore **cannot read
