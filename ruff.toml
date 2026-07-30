@@ -1,0 +1,31 @@
+# Kept in ruff.toml rather than pyproject.toml: this repo is a runnable tool, not a
+# distributable package, and a pyproject.toml would imply otherwise.
+line-length = 100
+target-version = "py39"
+
+[lint]
+select = [
+    "E",    # pycodestyle
+    "F",    # pyflakes
+    "W",    # warnings
+    "I",    # import sorting
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "C4",   # comprehensions
+    "SIM",  # simplifications
+    "RUF",
+]
+ignore = [
+    # The codebase deliberately catches broad exceptions in a few places where a
+    # failure must not take a scheduled run down; each one is commented.
+    "B904",
+    # This tool speaks French: en dashes, accents and non-breaking spaces in user
+    # facing strings are intentional, not typos.
+    "RUF001",
+    "RUF002",
+    "RUF003",
+]
+
+[lint.per-file-ignores]
+# Fakes and fixtures mirror API shapes rather than following our own conventions.
+"tests/*" = ["B008"]

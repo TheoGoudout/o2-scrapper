@@ -5,15 +5,13 @@ client is exercised against a fake discovery service, so every path that could
 destroy data — deletion in particular — is covered offline.
 """
 
-import re
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime
 from types import SimpleNamespace
 
 from o2sync import gcal, sync
 from o2sync.errors import CalendarAPIError
 from o2sync.model import PARIS, normalize_event, reset_warnings
-
 from tests.test_model import epoch_ms, make_event
 
 WINDOW_START = datetime(2026, 6, 1, tzinfo=PARIS)
@@ -209,9 +207,7 @@ class PlanTest(unittest.TestCase):
         vanished = service(eventId=4, eventStart=epoch_ms(2026, 6, 23, 9, 0))
 
         existing = [synced_event(unchanged), synced_event(changed_before), synced_event(vanished)]
-        result = sync.plan(
-            [unchanged, changed_after, new], existing, WINDOW_START, WINDOW_END
-        )
+        result = sync.plan([unchanged, changed_after, new], existing, WINDOW_START, WINDOW_END)
 
         self.assertEqual(result.summary(), "1 created, 1 updated, 1 unchanged, 1 deleted")
 
@@ -351,12 +347,25 @@ class ApplyTest(unittest.TestCase):
 
 
 class CalendarResolutionTest(unittest.TestCase):
+    """The calendar.app.created scope can create a calendar but cannot list any.
+
+    calendarList.list requires calendar.readonly / calendar / calendar.calendarlist*,
+    so a real deployment gets a 403 there. Discovery must therefore be optional and
+    a missing id must never silently create a duplicate calendar on every run.
+    """
+
     class FakeCalendarList:
-        def __init__(self, items):
+        def __init__(self, items, error=None):
             self.items = items
+            self.error = error
 
         def list(self, pageToken=None, showHidden=False):
-            return FakeRequest(lambda: {"items": self.items})
+            def run():
+                if self.error:
+                    raise self.error
+                return {"items": self.items}
+
+            return FakeRequest(run)
 
     class FakeCalendars:
         def __init__(self):
@@ -369,22 +378,47 @@ class CalendarResolutionTest(unittest.TestCase):
 
             return FakeRequest(run)
 
-    def _client(self, items):
+    def _client(self, items, error=None):
         calendars = self.FakeCalendars()
-        calendar_list = self.FakeCalendarList(items)
+        calendar_list = self.FakeCalendarList(items, error)
         service_obj = SimpleNamespace(
             calendarList=lambda: calendar_list, calendars=lambda: calendars
         )
         return gcal.CalendarClient(service=service_obj), calendars
 
-    def test_reuses_an_existing_calendar(self):
+    def test_an_explicit_id_skips_discovery_entirely(self):
+        client, calendars = self._client([], error=http_error(403))
+        self.assertEqual(client.resolve_calendar("O2 – Prestations", "given-id"), "given-id")
+        self.assertEqual(calendars.created, [])
+
+    def test_discovery_is_used_when_the_scope_allows_it(self):
         client, calendars = self._client([{"id": "existing", "summary": "O2 – Prestations"}])
         self.assertEqual(client.resolve_calendar("O2 – Prestations"), "existing")
         self.assertEqual(calendars.created, [])
 
-    def test_creates_the_calendar_when_missing(self):
+    def test_forbidden_listing_asks_for_calendar_init_instead_of_creating(self):
+        # The bug this replaces: falling through to create() here would have made a
+        # brand new calendar on every single sync cycle.
+        client, calendars = self._client([], error=http_error(403))
+        with self.assertRaises(CalendarAPIError) as caught:
+            client.resolve_calendar("O2 – Prestations")
+        self.assertIn("calendar-init", str(caught.exception))
+        self.assertEqual(calendars.created, [])
+
+    def test_missing_calendar_with_listing_allowed_still_refuses_to_guess(self):
         client, calendars = self._client([{"id": "other", "summary": "Work"}])
-        self.assertEqual(client.resolve_calendar("O2 – Prestations"), "newcalendarid")
+        with self.assertRaises(CalendarAPIError):
+            client.resolve_calendar("O2 – Prestations")
+        self.assertEqual(calendars.created, [])
+
+    def test_other_listing_errors_are_not_swallowed(self):
+        client, _ = self._client([], error=http_error(500))
+        with self.assertRaises(CalendarAPIError):
+            client.find_calendar_by_name("O2 – Prestations")
+
+    def test_create_calendar_uses_the_paris_timezone(self):
+        client, calendars = self._client([])
+        self.assertEqual(client.create_calendar("O2 – Prestations"), "newcalendarid")
         self.assertEqual(calendars.created[0]["timeZone"], "Europe/Paris")
 
 

@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections.abc import Iterable
 from datetime import datetime
-from typing import Any, Iterable
+from typing import Any
 
 from .errors import CalendarAPIError
 from .model import Service
@@ -38,6 +39,9 @@ PROP_STATUS = "o2Status"
 #: Retries inside the Google client for transient 5xx and rate limiting.
 NUM_RETRIES = 3
 
+#: Named in error messages so the scope/permission trade-off is obvious when it bites.
+SCOPE_HINT = "calendar.app.created"
+
 #: Service category -> Google colour id, chosen to approximate the extranet's own
 #: palette. Google only offers 11 fixed event colours, so these are the nearest fit.
 CATEGORY_COLOURS = {
@@ -60,7 +64,7 @@ def event_id_for(o2_event_id: str) -> str:
     digest prefixed with ``o2`` is always valid, and the same O2 service always
     maps to the same calendar event even if our local state is wiped.
     """
-    digest = hashlib.sha1(f"o2:{o2_event_id}".encode("utf-8")).hexdigest()
+    digest = hashlib.sha1(f"o2:{o2_event_id}".encode()).hexdigest()
     return f"o2{digest}"
 
 
@@ -163,29 +167,14 @@ class CalendarClient:
 
     # ------------------------------------------------------------------ calendar
 
-    def resolve_calendar(self, name: str = DEFAULT_CALENDAR_NAME) -> str:
-        """Return the id of the dedicated calendar, creating it if needed.
+    def create_calendar(self, name: str = DEFAULT_CALENDAR_NAME) -> str:
+        """Create the dedicated calendar and return its id.
 
-        With the ``calendar.app.created`` scope only calendars this app created are
-        visible, so a calendar the user made by hand cannot be adopted — it would
-        simply not appear here and a second one would be created.
+        ``calendars.insert`` is one of the few methods the ``calendar.app.created``
+        scope allows, which is why bootstrapping works even though discovery does
+        not.
         """
         try:
-            page_token = None
-            while True:
-                response = (
-                    self.service.calendarList()
-                    .list(pageToken=page_token, showHidden=True)
-                    .execute(num_retries=NUM_RETRIES)
-                )
-                for entry in response.get("items", []):
-                    if entry.get("summary") == name:
-                        log.info("Using existing calendar %r (%s)", name, entry["id"])
-                        return entry["id"]
-                page_token = response.get("nextPageToken")
-                if not page_token:
-                    break
-
             created = (
                 self.service.calendars()
                 .insert(
@@ -197,11 +186,69 @@ class CalendarClient:
                 )
                 .execute(num_retries=NUM_RETRIES)
             )
-        except Exception as exc:  # noqa: BLE001 - re-raised as our own error type
-            raise CalendarAPIError(f"Could not resolve or create calendar {name!r}: {exc}") from exc
+        except Exception as exc:
+            raise CalendarAPIError(f"Could not create calendar {name!r}: {exc}") from exc
 
         log.info("Created calendar %r (%s)", name, created["id"])
         return created["id"]
+
+    def find_calendar_by_name(self, name: str) -> str | None:
+        """Look the calendar up by name, or ``None`` if we are not allowed to look.
+
+        ``calendarList.list`` needs ``calendar.readonly`` / ``calendar`` /
+        ``calendar.calendarlist*``; the ``calendar.app.created`` scope this tool
+        requests is deliberately not one of them. So discovery is a bonus for
+        anyone who granted a broader scope, never something to depend on — hence
+        the 403 is swallowed rather than raised.
+        """
+        from googleapiclient.errors import HttpError
+
+        try:
+            page_token = None
+            while True:
+                response = (
+                    self.service.calendarList()
+                    .list(pageToken=page_token, showHidden=True)
+                    .execute(num_retries=NUM_RETRIES)
+                )
+                for entry in response.get("items", []):
+                    if entry.get("summary") == name:
+                        log.info("Found calendar %r (%s)", name, entry["id"])
+                        return entry["id"]
+                page_token = response.get("nextPageToken")
+                if not page_token:
+                    return None
+        except HttpError as exc:
+            if getattr(exc, "status_code", None) == 403 or "403" in str(exc):
+                log.debug("Not allowed to list calendars with the current scope.")
+                return None
+            raise CalendarAPIError(f"Could not list calendars: {exc}") from exc
+        except Exception as exc:
+            raise CalendarAPIError(f"Could not list calendars: {exc}") from exc
+
+    def resolve_calendar(
+        self, name: str = DEFAULT_CALENDAR_NAME, calendar_id: str | None = None
+    ) -> str:
+        """Return the id of the calendar to sync into.
+
+        An explicit id always wins. Otherwise we try discovery, which only works
+        with a broader scope; failing that the caller has to bootstrap once with
+        ``o2sync calendar-init``. We deliberately do **not** create a calendar as a
+        fallback here: with no way to find it again, every run would make another
+        one.
+        """
+        if calendar_id:
+            return calendar_id
+
+        found = self.find_calendar_by_name(name)
+        if found:
+            return found
+
+        raise CalendarAPIError(
+            f"No calendar id configured, and this app's scope ({SCOPE_HINT}) cannot list "
+            "calendars to find one. Create it once with 'python -m o2sync calendar-init', "
+            "then set the O2_CALENDAR_ID it prints."
+        )
 
     # -------------------------------------------------------------------- events
 
@@ -235,7 +282,7 @@ class CalendarClient:
                 page_token = response.get("nextPageToken")
                 if not page_token:
                     break
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise CalendarAPIError(f"Could not list calendar events: {exc}") from exc
         return events
 
@@ -259,19 +306,17 @@ class CalendarClient:
                 log.debug("Event id %s already exists; updating instead.", body.get("id"))
                 return self.update_event(calendar_id, body["id"], body)
             raise CalendarAPIError(f"Could not create event {body.get('id')}: {exc}") from exc
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise CalendarAPIError(f"Could not create event {body.get('id')}: {exc}") from exc
 
-    def update_event(
-        self, calendar_id: str, event_id: str, body: dict[str, Any]
-    ) -> dict[str, Any]:
+    def update_event(self, calendar_id: str, event_id: str, body: dict[str, Any]) -> dict[str, Any]:
         try:
             return (
                 self.service.events()
                 .update(calendarId=calendar_id, eventId=event_id, body=body)
                 .execute(num_retries=NUM_RETRIES)
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise CalendarAPIError(f"Could not update event {event_id}: {exc}") from exc
 
     def delete_event(self, calendar_id: str, event_id: str) -> None:
@@ -279,16 +324,16 @@ class CalendarClient:
         from googleapiclient.errors import HttpError
 
         try:
-            self.service.events().delete(
-                calendarId=calendar_id, eventId=event_id
-            ).execute(num_retries=NUM_RETRIES)
+            self.service.events().delete(calendarId=calendar_id, eventId=event_id).execute(
+                num_retries=NUM_RETRIES
+            )
         except HttpError as exc:
             status = getattr(exc, "status_code", None)
             if status in (404, 410) or "404" in str(exc) or "410" in str(exc):
                 log.debug("Event %s was already deleted.", event_id)
                 return
             raise CalendarAPIError(f"Could not delete event {event_id}: {exc}") from exc
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise CalendarAPIError(f"Could not delete event {event_id}: {exc}") from exc
 
 

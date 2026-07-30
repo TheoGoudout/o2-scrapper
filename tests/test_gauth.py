@@ -96,11 +96,11 @@ class LoadCredentialsTest(unittest.TestCase):
         self.assertIn("not a valid Google token file", str(caught.exception))
 
     def test_refresh_token_without_client_details_is_rejected(self):
-        with unittest.mock.patch.dict(
-            "os.environ", {gauth.ENV_REFRESH_TOKEN: "r"}, clear=False
+        with (
+            unittest.mock.patch.dict("os.environ", {gauth.ENV_REFRESH_TOKEN: "r"}, clear=False),
+            self.assertRaises(GoogleAuthRequired) as caught,
         ):
-            with self.assertRaises(GoogleAuthRequired) as caught:
-                gauth.load_credentials(token=str(self.token))
+            gauth.load_credentials(token=str(self.token))
         self.assertIn(gauth.ENV_CLIENT_ID, str(caught.exception))
 
 
@@ -112,9 +112,7 @@ class EnvBlockTest(unittest.TestCase):
 
     def test_renders_the_three_variables(self):
         self.token.write_text(
-            json.dumps(
-                {"client_id": "cid", "client_secret": "sec", "refresh_token": "ref"}
-            ),
+            json.dumps({"client_id": "cid", "client_secret": "sec", "refresh_token": "ref"}),
             encoding="utf-8",
         )
         block = gauth.env_block(str(self.token))

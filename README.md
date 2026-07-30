@@ -79,10 +79,16 @@ python -m o2sync sync --from-json raw.json --dry-run   # replay a dump, no O2 lo
 python -m o2sync sync --interval 6h                    # stay alive, re-sync every 6h
 ```
 
-Same window flags as `fetch`. The dedicated calendar is created on first run
-(named `O2 – Prestations` unless `--calendar-name` says otherwise); `--calendar-id`
-targets one directly. `--interval` turns it into a long-running loop — see
+Same window flags as `fetch`. The target calendar comes from `--calendar-id` or
+`$O2_CALENDAR_ID` — run [`calendar-init`](#calendar-init--create-the-calendar-once)
+once to get it. `--interval` turns this into a long-running loop, see
 [Running it on a schedule](#running-it-on-a-schedule).
+
+### `calendar-init` — create the calendar, once
+
+```bash
+python -m o2sync calendar-init   # prints the O2_CALENDAR_ID to save
+```
 
 ### `healthcheck` — is the loop alive?
 
@@ -159,7 +165,11 @@ Instead of steps 5–6 above:
    **refresh token**.
 6. In Coolify's *Environment Variables*, set `O2_GOOGLE_CLIENT_ID`,
    `O2_GOOGLE_CLIENT_SECRET` and `O2_GOOGLE_REFRESH_TOKEN` to those three values,
-   along with `O2_EMAIL` and `O2_PASSWORD`. Deploy.
+   along with `O2_EMAIL` and `O2_PASSWORD`.
+7. Bootstrap the calendar once — in Coolify, add a **Scheduled Task** (or use the
+   container *Terminal*) running `python -m o2sync calendar-init`, and copy the
+   `O2_CALENDAR_ID=…` it prints into the environment variables too. See
+   [The calendar id](#the-calendar-id) for why this step exists. Then deploy.
 
 A Web-application client works fine here: refreshing a token only needs the client
 id, secret and refresh token, and is identical for both client types. You never
@@ -180,8 +190,27 @@ you made by hand; let it create its own.
 | `O2_EMAIL`, `O2_PASSWORD` | O2 account |
 | `O2_GOOGLE_CLIENT_ID`, `O2_GOOGLE_CLIENT_SECRET`, `O2_GOOGLE_REFRESH_TOKEN` | Google, without any file on disk |
 | `O2_GOOGLE_CLIENT_SECRETS`, `O2_GOOGLE_TOKEN` | alternative paths to `credentials.json` / `token.json` |
+| `O2_CALENDAR_ID` | which calendar to sync into — see [below](#the-calendar-id) |
 | `O2_SYNC_INTERVAL` | re-sync every N (`6h`); makes `sync` a long-running loop |
 | `O2_HEARTBEAT_FILE` | where the loop writes its liveness file |
+
+### The calendar id
+
+`calendar.app.created` lets this tool **create** a calendar but not **list** any:
+`calendarList.list` requires `calendar.readonly` / `calendar` /
+`calendar.calendarlist*`, and deliberately none of those are requested. So the tool
+cannot go looking for its own calendar by name — the id has to be recorded once:
+
+```bash
+python -m o2sync calendar-init      # prints: O2_CALENDAR_ID=…@group.calendar.google.com
+```
+
+Set that as `O2_CALENDAR_ID` (or pass `--calendar-id`) and every later run targets it
+directly. If your credentials happen to carry a broader scope, discovery by name is
+tried first and this is optional.
+
+`sync` never creates a calendar as a fallback: with no way to find it again, it would
+make a new one on every single cycle.
 
 O2 credentials are read from flags, then the environment, then `.env`, then an
 interactive prompt. Prefer the environment: command-line arguments are visible to
@@ -223,7 +252,9 @@ to stay up and own its schedule, which is what `--interval` is for. The bundled
    **Docker Compose** (the repo has a `docker-compose.yaml`).
 3. In *Environment Variables*, set `O2_EMAIL`, `O2_PASSWORD` and the three
    `O2_GOOGLE_*` values from step 1. Optionally `O2_SYNC_INTERVAL` (default `6h`).
-4. Deploy. The container should stay **running**, logging one summary line per
+4. Run `python -m o2sync calendar-init` once (Coolify *Terminal*, or a one-off
+   Scheduled Task) and add the `O2_CALENDAR_ID` it prints to the environment.
+5. Deploy. The container should stay **running**, logging one summary line per
    cycle.
 
 The container needs no volumes and no ports — sync state lives in the Google
@@ -386,11 +417,15 @@ that isn't happening never notifies you.
 python -m unittest discover -s tests -t .
 ```
 
-86 tests, no network: normalisation, the calendar event mapping, every branch of the
-diff engine including the deletion fences and the `409` fallback, the scheduling loop
-(interval parsing, surviving a transient outage, fatal-on-bad-credentials, `SIGTERM`
-shutdown, heartbeat staleness), and credential handling (wrong OAuth client type,
-corrupt token, headless machine). Fixtures
+90 tests, no network: normalisation, the calendar event mapping, every branch of the
+diff engine including the deletion fences and the `409` fallback, calendar resolution
+(including refusing to create a duplicate when listing is forbidden), the scheduling
+loop (interval parsing, surviving a transient outage, fatal-on-bad-credentials,
+`SIGTERM` shutdown, heartbeat staleness), and credential handling (wrong OAuth client
+type, corrupt token, headless machine).
+
+CI runs them on Python 3.9–3.13, lints with `ruff`, builds the Docker image and
+smoke-tests the container. Fixtures
 mirror a real payload but every value is synthetic — no personal data is committed
 to this repository.
 

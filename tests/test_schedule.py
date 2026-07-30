@@ -33,9 +33,8 @@ class IntervalTest(unittest.TestCase):
 
     def test_rejects_nonsense(self):
         for value in ["", "soon", "6x", "-", "h"]:
-            with self.subTest(value=value):
-                with self.assertRaises(SystemExit):
-                    cli.parse_interval(value)
+            with self.subTest(value=value), self.assertRaises(SystemExit):
+                cli.parse_interval(value)
 
     def test_rejects_an_interval_that_would_hammer_o2(self):
         with self.assertRaises(SystemExit):

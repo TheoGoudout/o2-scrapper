@@ -141,9 +141,7 @@ class O2Client:
         """POST an admin-ajax action and return the raw response body."""
         data = {"action": action, **params}
         try:
-            response = self.session.post(
-                self.base_url + AJAX_PATH, data=data, timeout=self.timeout
-            )
+            response = self.session.post(self.base_url + AJAX_PATH, data=data, timeout=self.timeout)
         except requests.RequestException as exc:
             raise TransportError(f"{action}: request failed ({exc})") from exc
 
@@ -207,7 +205,7 @@ class O2Client:
         """End the session. Best effort: failures here are never worth raising."""
         try:
             self._post("ask_logout")
-        except Exception as exc:  # noqa: BLE001 - logout must not mask real errors
+        except Exception as exc:
             log.debug("Logout failed, ignoring: %s", exc)
 
     def _relogin(self) -> bool:
@@ -233,9 +231,7 @@ class O2Client:
         end_ms = int(end.timestamp()) * 1000 + 999
 
         try:
-            body = self._post(
-                "get_planning_events", startDate=str(start_ms), endDate=str(end_ms)
-            )
+            body = self._post("get_planning_events", startDate=str(start_ms), endDate=str(end_ms))
             payload = self._parse_json("get_planning_events", body)
         except SessionExpired:
             # Either the session lapsed or O2's backend hiccuped; one retry tells
@@ -244,9 +240,7 @@ class O2Client:
                 raise ServiceUnavailable(
                     "O2 returned 'fail' for the planning request (not logged in)."
                 )
-            body = self._post(
-                "get_planning_events", startDate=str(start_ms), endDate=str(end_ms)
-            )
+            body = self._post("get_planning_events", startDate=str(start_ms), endDate=str(end_ms))
             try:
                 payload = self._parse_json("get_planning_events", body)
             except SessionExpired as exc:
@@ -301,7 +295,7 @@ class O2Client:
             return cache[code]
         try:
             label = self._post(action, **{param: code})
-        except Exception as exc:  # noqa: BLE001 - labels are cosmetic
+        except Exception as exc:
             log.debug("Label lookup %s(%s) failed: %s", action, code, exc)
             return ""
         if not label or label == FAIL_TOKEN or "<" in label:
@@ -329,7 +323,7 @@ class O2Client:
 
     # ---------------------------------------------------------------- lifecycle
 
-    def __enter__(self) -> "O2Client":
+    def __enter__(self) -> O2Client:
         return self
 
     def __exit__(self, *exc_info: Any) -> None:

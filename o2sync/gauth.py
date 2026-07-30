@@ -11,6 +11,7 @@ modify the user's primary calendar — or any other one — no matter what it do
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -43,9 +44,7 @@ SETUP_HINT = (
 )
 
 
-def resolve_paths(
-    client_secrets: str | None = None, token: str | None = None
-) -> tuple[Path, Path]:
+def resolve_paths(client_secrets: str | None = None, token: str | None = None) -> tuple[Path, Path]:
     """Resolve the two credential file paths from flags, then environment, then defaults."""
     secrets_path = client_secrets or os.environ.get(ENV_CLIENT_SECRETS) or DEFAULT_CLIENT_SECRETS
     token_path = token or os.environ.get(ENV_TOKEN) or DEFAULT_TOKEN
@@ -55,10 +54,9 @@ def resolve_paths(
 def _save(credentials, token_path: Path) -> None:
     token_path.parent.mkdir(parents=True, exist_ok=True)
     token_path.write_text(credentials.to_json(), encoding="utf-8")
-    try:
-        token_path.chmod(0o600)  # it is a long-lived secret
-    except OSError:  # pragma: no cover - filesystems that don't support it
-        pass
+    # Not every filesystem supports it, but where it does this is a long-lived secret.
+    with contextlib.suppress(OSError):
+        token_path.chmod(0o600)
     log.debug("Stored Google credentials in %s", token_path)
 
 
@@ -232,8 +230,7 @@ def env_block(token: str | None = None) -> str:
     missing = [k for k in ("client_id", "client_secret", "refresh_token") if not data.get(k)]
     if missing:
         raise GoogleAuthRequired(
-            f"{token_path} is missing {', '.join(missing)}. "
-            "Re-run: python -m o2sync auth"
+            f"{token_path} is missing {', '.join(missing)}. Re-run: python -m o2sync auth"
         )
 
     return "\n".join(

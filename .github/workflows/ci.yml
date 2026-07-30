@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: tests (python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The README promises 3.9+, so prove it rather than assume it.
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - run: pip install -r requirements.txt
+
+      - name: Unit tests
+        run: python -m unittest discover -s tests -t . -v
+
+      - name: CLI smoke test
+        # Catches an import-time or argparse break that unit tests would miss.
+        run: |
+          python -m o2sync --version
+          python -m o2sync --help
+          python -m o2sync sync --help
+          python -m o2sync healthcheck --heartbeat-file /nonexistent && exit 1 || true
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - run: ruff check --output-format=github .
+      - run: ruff format --check --diff .
+
+  docker:
+    name: docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: o2sync:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Image runs and reports its own commands
+        run: docker run --rm o2sync:ci --help
+
+      - name: Health check fails before the first sync
+        # The container must report unhealthy until the loop has run once,
+        # otherwise the HEALTHCHECK would be meaningless.
+        run: |
+          if docker run --rm o2sync:ci healthcheck; then
+            echo "healthcheck passed with no heartbeat, which is wrong"
+            exit 1
+          fi
+
+      - name: Sync without Google credentials exits 2, not a traceback
+        run: |
+          set +e
+          docker run --rm --entrypoint sh -e O2_SYNC_INTERVAL= o2sync:ci \
+            -c 'echo "[]" > /tmp/e.json && python -m o2sync sync --no-prompt --from-json /tmp/e.json'
+          code=$?
+          set -e
+          echo "exit=$code"
+          test "$code" = "2"
+
+  compose:
+    name: docker compose config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate docker-compose.yaml
+        run: docker compose config --quiet
+        env:
+          O2_EMAIL: ci@example.com
+          O2_PASSWORD: ci
+          O2_GOOGLE_CLIENT_ID: ci
+          O2_GOOGLE_CLIENT_SECRET: ci
+          O2_GOOGLE_REFRESH_TOKEN: ci

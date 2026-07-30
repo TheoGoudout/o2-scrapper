@@ -77,7 +77,7 @@ def resolve_credentials(
 
     if not email or not password:
         raise SystemExit(
-            "Missing credentials. Set %s and %s in the environment or a .env file "
-            "(see .env.example)." % (ENV_EMAIL, ENV_PASSWORD)
+            f"Missing credentials. Set {ENV_EMAIL} and {ENV_PASSWORD} in the environment "
+            "or a .env file (see .env.example)."
         )
     return email, password

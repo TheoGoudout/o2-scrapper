@@ -8,9 +8,10 @@ is what makes the risky part (deletion) straightforward to test.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Iterable
+from typing import Any
 
 from . import gcal
 from .model import PARIS, Service
@@ -176,7 +177,7 @@ def plan(
 
 def apply(
     sync_plan: SyncPlan,
-    client: "gcal.CalendarClient",
+    client: gcal.CalendarClient,
     calendar_id: str,
     dry_run: bool = False,
 ) -> SyncPlan:

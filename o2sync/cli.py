@@ -74,7 +74,9 @@ def parse_interval(value: str) -> int:
 
 def _add_window_args(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group("window")
-    group.add_argument("--days-back", type=int, default=30, help="how far back to look (default: 30)")
+    group.add_argument(
+        "--days-back", type=int, default=30, help="how far back to look (default: 30)"
+    )
     group.add_argument(
         "--days-forward", type=int, default=90, help="how far ahead to look (default: 90)"
     )
@@ -165,7 +167,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="name of the dedicated calendar, created if missing (default: 'O2 – Prestations')",
     )
     calendar.add_argument(
-        "--calendar-id", help="use this calendar id directly instead of looking one up by name"
+        "--calendar-id",
+        default=os.environ.get("O2_CALENDAR_ID"),
+        help="calendar to sync into, or set $O2_CALENDAR_ID. Required unless your Google "
+        "credentials carry a scope broad enough to list calendars; get one from "
+        "'o2sync calendar-init'.",
     )
     calendar.add_argument(
         "--dry-run", action="store_true", help="show what would change without writing anything"
@@ -194,6 +200,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_verbosity(sync)
     sync.set_defaults(handler=cmd_sync)
+
+    calendar_init = subparsers.add_parser(
+        "calendar-init",
+        help="create the dedicated calendar once and print its id",
+        description="Creates the dedicated Google Calendar and prints the O2_CALENDAR_ID to "
+        "set. Run this once during setup: the least-privilege scope this tool requests can "
+        "create a calendar but cannot list calendars to find one again, so the id has to be "
+        "recorded in your environment.",
+    )
+    _add_google_args(calendar_init)
+    calendar_init.add_argument(
+        "--calendar-name",
+        default=None,
+        help="name of the calendar to create (default: 'O2 – Prestations')",
+    )
+    _add_verbosity(calendar_init)
+    calendar_init.set_defaults(handler=cmd_calendar_init)
 
     healthcheck = subparsers.add_parser(
         "healthcheck",
@@ -343,7 +366,8 @@ def cmd_fetch(args: argparse.Namespace) -> int:
 
 def _sync_once(args: argparse.Namespace) -> str:
     """Run one full synchronisation and return its summary line."""
-    from . import gauth, gcal, sync as sync_module
+    from . import gauth, gcal
+    from . import sync as sync_module
 
     start, end = resolve_window(args)
 
@@ -356,8 +380,8 @@ def _sync_once(args: argparse.Namespace) -> str:
     credentials = gauth.load_credentials(args.client_secrets, args.token)
     client = gcal.CalendarClient(credentials)
 
-    calendar_id = args.calendar_id or client.resolve_calendar(
-        args.calendar_name or gcal.DEFAULT_CALENDAR_NAME
+    calendar_id = client.resolve_calendar(
+        args.calendar_name or gcal.DEFAULT_CALENDAR_NAME, args.calendar_id
     )
     existing = client.list_synced_events(calendar_id, start, end)
     log.info("Calendar already holds %d synced event(s) in the window", len(existing))
@@ -438,6 +462,27 @@ def cmd_sync(args: argparse.Namespace) -> int:
         _sync_once(args)
         return EXIT_OK
     return _sync_loop(args, parse_interval(args.interval))
+
+
+def cmd_calendar_init(args: argparse.Namespace) -> int:
+    from . import gauth, gcal
+
+    credentials = gauth.load_credentials(args.client_secrets, args.token)
+    client = gcal.CalendarClient(credentials)
+    name = args.calendar_name or gcal.DEFAULT_CALENDAR_NAME
+
+    existing = client.find_calendar_by_name(name)
+    if existing:
+        log.warning(
+            "A calendar named %r already exists; reusing it rather than making a second.", name
+        )
+        calendar_id = existing
+    else:
+        calendar_id = client.create_calendar(name)
+
+    print(f"O2_CALENDAR_ID={calendar_id}")
+    log.info("Set that variable in your environment, then run: python -m o2sync sync --dry-run")
+    return EXIT_OK
 
 
 def cmd_healthcheck(args: argparse.Namespace) -> int:

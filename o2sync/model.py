@@ -11,9 +11,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Iterable, Mapping
+from typing import Any
 from zoneinfo import ZoneInfo
 
 log = logging.getLogger(__name__)
