@@ -11,6 +11,7 @@ modify the user's primary calendar — or any other one — no matter what it do
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -164,11 +165,57 @@ def run_consent_flow(client_secrets: str | None = None, token: str | None = None
             f"No OAuth client secrets at {secrets_path}. " + SETUP_HINT % secrets_path
         )
 
-    flow = InstalledAppFlow.from_client_secrets_file(str(secrets_path), SCOPES)
-    # port=0 lets the OS pick a free port for the loopback redirect.
-    # prompt=consent forces Google to hand back a refresh token every time, even
-    # if this client was already authorised.
-    credentials = flow.run_local_server(port=0, prompt="consent")
+    # google-auth-oauthlib happily accepts a "web" client here and only fails much
+    # later, at Google's redirect_uri check, with an opaque error. Catch it now.
+    try:
+        config = json.loads(secrets_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise GoogleAuthRequired(f"Could not read {secrets_path} as JSON: {exc}") from exc
+
+    if isinstance(config, dict) and "installed" not in config:
+        kind = ", ".join(config) or "nothing recognisable"
+        raise GoogleAuthRequired(
+            f"{secrets_path} contains {kind}, not a Desktop app client. In Google Cloud, under "
+            "APIs & Services -> Google Auth Platform -> Clients, create a client with "
+            "application type 'Desktop app' and download that JSON instead."
+        )
+
+    try:
+        flow = InstalledAppFlow.from_client_secrets_file(str(secrets_path), SCOPES)
+    except ValueError as exc:
+        # By far the most common setup mistake: creating a "Web application"
+        # client instead of a "Desktop app" one.
+        raise GoogleAuthRequired(
+            f"{secrets_path} is not a Desktop app OAuth client ({exc}). In Google Cloud, "
+            "under APIs & Services -> Google Auth Platform -> Clients, create a client with "
+            "application type 'Desktop app' and download that JSON instead."
+        ) from exc
+    except (OSError, KeyError) as exc:
+        raise GoogleAuthRequired(f"Could not read {secrets_path}: {exc}") from exc
+
+    import webbrowser
+
+    try:
+        # port=0 lets the OS pick a free port for the loopback redirect.
+        # prompt=consent forces Google to hand back a refresh token every time,
+        # even if this client was already authorised.
+        credentials = flow.run_local_server(port=0, prompt="consent")
+    except webbrowser.Error as exc:
+        # Typically means this was run over SSH or in a container. The consent flow
+        # needs a real browser on the same machine as the loopback listener.
+        raise GoogleAuthRequired(
+            f"No browser available to complete the consent flow ({exc}). Run "
+            "'python -m o2sync auth' on your own computer, then copy the credentials to "
+            "the server with 'python -m o2sync auth --print-env'."
+        ) from exc
+
+    if not credentials.refresh_token:
+        raise GoogleAuthRequired(
+            "Google did not return a refresh token, so unattended runs would stop working "
+            "after an hour. Revoke this app's access at "
+            "https://myaccount.google.com/permissions and run 'python -m o2sync auth' again."
+        )
+
     _save(credentials, token_path)
     return token_path
 

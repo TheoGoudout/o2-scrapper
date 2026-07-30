@@ -11,11 +11,29 @@ from the O2 planning are removed.
 
 ## Install
 
+Python 3.9+ (uses `zoneinfo`). Use a virtualenv — it keeps the Google libraries
+away from your system Python, which also sidesteps the `cryptography` clash noted
+under [Troubleshooting](#troubleshooting).
+
 ```bash
+git clone https://github.com/TheoGoudout/o2-scrapper.git
+cd o2-scrapper
+
+python3 -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+
 pip install -r requirements.txt
 ```
 
-Python 3.9+ (uses `zoneinfo`).
+Check it works before touching Google:
+
+```bash
+python -m o2sync --version
+python -m o2sync --help
+```
+
+Every later `python -m o2sync …` command assumes the virtualenv is active (you'll
+see `(.venv)` in your prompt). If you open a new terminal, re-run the `source` line.
 
 ## Quick start
 
@@ -81,12 +99,35 @@ python -m o2sync auth --print-env  # re-print the credentials as env vars
 
 ## Google setup
 
+The consent screen moved: it is now *APIs & Services → **Google Auth Platform***,
+split into **Branding**, **Audience**, **Clients** and **Data Access**. The old
+single "OAuth consent screen" page no longer exists.
+
 1. In [Google Cloud Console](https://console.cloud.google.com/), create a project.
-2. Enable the **Google Calendar API**.
-3. Under *APIs & Services → Credentials*, create an **OAuth client ID** of type
-   **Desktop app**, and download it as `credentials.json` next to the code.
-4. On the OAuth consent screen, add your own address as a test user.
-5. Run `python -m o2sync auth`.
+2. *APIs & Services → Library* → enable the **Google Calendar API**.
+3. *Google Auth Platform → **Branding***: set an app name and your support e-mail.
+   You cannot create a client until this is filled in.
+4. *Google Auth Platform → **Audience***: user type **External**, then click
+   **Publish app** so the status reads *In production* — **not** *Testing*. See the
+   warning below; this matters more than it looks.
+5. *Google Auth Platform → **Clients*** → *Create client* → application type
+   **Desktop app** → download the JSON and save it as `credentials.json` next to
+   the code.
+6. Run `python -m o2sync auth`.
+
+> **Publish the app, don't leave it in Testing.** While the publishing status is
+> *Testing*, Google expires every refresh token after **7 days**
+> ([docs](https://support.google.com/cloud/answer/15549945),
+> [explainer](https://www.unipile.com/google-oauth-refresh-token/)). The sync would
+> work for a week and then fail with `invalid_grant` until you re-authorised by
+> hand — which is exactly what you don't want on a server. *In production* issues
+> refresh tokens that do not expire on a timer.
+
+Because the app is published but unverified, the consent screen will say
+**"Google hasn't verified this app"**. That is expected for a personal tool: click
+**Advanced → Go to … (unsafe)** and continue. Unverified apps are capped at 100
+users, which is 99 more than you need. You do not need to submit for verification,
+and you do not need to add test users at all once the app is published.
 
 The only scope requested is
 [`calendar.app.created`](https://developers.google.com/calendar/api/auth): *make
@@ -308,10 +349,11 @@ that isn't happening never notifies you.
 python -m unittest discover -s tests -t .
 ```
 
-72 tests, no network: normalisation, the calendar event mapping, every branch of the
-diff engine including the deletion fences and the `409` fallback, and the scheduling
-loop (interval parsing, surviving a transient outage, fatal-on-bad-credentials,
-`SIGTERM` shutdown, heartbeat staleness). Fixtures
+86 tests, no network: normalisation, the calendar event mapping, every branch of the
+diff engine including the deletion fences and the `409` fallback, the scheduling loop
+(interval parsing, surviving a transient outage, fatal-on-bad-credentials, `SIGTERM`
+shutdown, heartbeat staleness), and credential handling (wrong OAuth client type,
+corrupt token, headless machine). Fixtures
 mirror a real payload but every value is synthetic — no personal data is committed
 to this repository.
 
