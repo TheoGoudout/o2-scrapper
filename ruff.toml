@@ -1,7 +1,7 @@
 # Kept in ruff.toml rather than pyproject.toml: this repo is a runnable tool, not a
 # distributable package, and a pyproject.toml would imply otherwise.
 line-length = 100
-target-version = "py39"
+target-version = "py310"
 
 [lint]
 select = [

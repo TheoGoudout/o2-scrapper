@@ -11,7 +11,7 @@ from the O2 planning are removed.
 
 ## Install
 
-Python 3.9+ (uses `zoneinfo`). Use a virtualenv — it keeps the Google libraries
+Python 3.10+. Use a virtualenv — it keeps the Google libraries
 away from your system Python, which also sidesteps the `cryptography` clash noted
 under [Troubleshooting](#troubleshooting).
 
@@ -448,7 +448,7 @@ loop (interval parsing, surviving a transient outage, fatal-on-bad-credentials,
 `SIGTERM` shutdown, heartbeat staleness), and credential handling (wrong OAuth client
 type, corrupt token, headless machine).
 
-CI runs them on Python 3.9–3.13, lints with `ruff`, builds the Docker image and
+CI runs them on Python 3.10–3.14, lints with `ruff`, builds the Docker image and
 smoke-tests the container. Fixtures
 mirror a real payload but every value is synthetic — no personal data is committed
 to this repository.
