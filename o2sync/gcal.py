@@ -17,7 +17,7 @@ from collections.abc import Iterable
 from datetime import datetime
 from typing import Any
 
-from .errors import CalendarAPIError
+from .errors import CalendarAPIError, CalendarError
 from .model import Service
 
 log = logging.getLogger(__name__)
@@ -41,6 +41,16 @@ NUM_RETRIES = 3
 
 #: Named in error messages so the scope/permission trade-off is obvious when it bites.
 SCOPE_HINT = "calendar.app.created"
+SCOPE_CALENDAR_LIST = "calendar.calendarlist.readonly"
+
+
+class DiscoveryNotPermitted(CalendarError):
+    """Listing calendars was refused by the granted scopes.
+
+    Internal signal only: it says "we are not allowed to look", which the caller
+    must not confuse with "we looked and found nothing".
+    """
+
 
 #: Service category -> Google colour id, chosen to approximate the extranet's own
 #: palette. Google only offers 11 fixed event colours, so these are the nearest fit.
@@ -193,13 +203,12 @@ class CalendarClient:
         return created["id"]
 
     def find_calendar_by_name(self, name: str) -> str | None:
-        """Look the calendar up by name, or ``None`` if we are not allowed to look.
+        """Look the calendar up by name, or ``None`` if there is no match.
 
-        ``calendarList.list`` needs ``calendar.readonly`` / ``calendar`` /
-        ``calendar.calendarlist*``; the ``calendar.app.created`` scope this tool
-        requests is deliberately not one of them. So discovery is a bonus for
-        anyone who granted a broader scope, never something to depend on — hence
-        the 403 is swallowed rather than raised.
+        Raises :class:`DiscoveryNotPermitted` when the granted scopes don't allow
+        listing at all — which is a different situation from "looked and found
+        nothing", and the two must not be conflated: creating a calendar is safe
+        in the second case and produces duplicates forever in the first.
         """
         from googleapiclient.errors import HttpError
 
@@ -220,35 +229,52 @@ class CalendarClient:
                     return None
         except HttpError as exc:
             if getattr(exc, "status_code", None) == 403 or "403" in str(exc):
-                log.debug("Not allowed to list calendars with the current scope.")
-                return None
+                log.debug("Not allowed to list calendars with the current scopes.")
+                raise DiscoveryNotPermitted(str(exc)) from exc
             raise CalendarAPIError(f"Could not list calendars: {exc}") from exc
+        except DiscoveryNotPermitted:
+            raise
         except Exception as exc:
             raise CalendarAPIError(f"Could not list calendars: {exc}") from exc
 
     def resolve_calendar(
-        self, name: str = DEFAULT_CALENDAR_NAME, calendar_id: str | None = None
+        self,
+        name: str = DEFAULT_CALENDAR_NAME,
+        calendar_id: str | None = None,
+        create: bool = True,
     ) -> str:
         """Return the id of the calendar to sync into.
 
-        An explicit id always wins. Otherwise we try discovery, which only works
-        with a broader scope; failing that the caller has to bootstrap once with
-        ``o2sync calendar-init``. We deliberately do **not** create a calendar as a
-        fallback here: with no way to find it again, every run would make another
-        one.
+        An explicit id always wins and skips every lookup. Otherwise behaviour
+        depends on whether the granted scopes permit discovery:
+
+        * **Discovery allowed** (``calendar.calendarlist.readonly`` granted): find
+          it by name, creating it once if absent. Safe, because the next run finds
+          what this one created.
+        * **Discovery not allowed** (``calendar.app.created`` alone): we cannot
+          look, so we must not create — a new calendar would be born on every
+          cycle. The caller has to pin the id instead.
         """
         if calendar_id:
             return calendar_id
 
-        found = self.find_calendar_by_name(name)
+        try:
+            found = self.find_calendar_by_name(name)
+        except DiscoveryNotPermitted as exc:
+            raise CalendarAPIError(
+                f"No calendar id configured, and the granted scopes ({SCOPE_HINT}) cannot list "
+                "calendars to find one. Either run 'python -m o2sync calendar-init' once and set "
+                f"the O2_CALENDAR_ID it prints, or additionally grant {SCOPE_CALENDAR_LIST} so "
+                "the calendar can be found by name."
+            ) from exc
+
         if found:
             return found
+        if create:
+            log.info("No calendar named %r yet; creating it.", name)
+            return self.create_calendar(name)
 
-        raise CalendarAPIError(
-            f"No calendar id configured, and this app's scope ({SCOPE_HINT}) cannot list "
-            "calendars to find one. Create it once with 'python -m o2sync calendar-init', "
-            "then set the O2_CALENDAR_ID it prints."
-        )
+        raise CalendarAPIError(f"No calendar named {name!r} and creation was not requested.")
 
     # -------------------------------------------------------------------- events
 

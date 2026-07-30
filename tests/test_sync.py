@@ -398,18 +398,35 @@ class CalendarResolutionTest(unittest.TestCase):
 
     def test_forbidden_listing_asks_for_calendar_init_instead_of_creating(self):
         # The bug this replaces: falling through to create() here would have made a
-        # brand new calendar on every single sync cycle.
+        # brand new calendar on every single sync cycle, forever.
         client, calendars = self._client([], error=http_error(403))
         with self.assertRaises(CalendarAPIError) as caught:
             client.resolve_calendar("O2 – Prestations")
-        self.assertIn("calendar-init", str(caught.exception))
+        message = str(caught.exception)
+        self.assertIn("calendar-init", message)
+        self.assertIn("calendarlist.readonly", message)
         self.assertEqual(calendars.created, [])
 
-    def test_missing_calendar_with_listing_allowed_still_refuses_to_guess(self):
+    def test_creates_the_calendar_when_listing_is_allowed_but_it_is_absent(self):
+        # Safe here precisely because the next run can find what this one created.
         client, calendars = self._client([{"id": "other", "summary": "Work"}])
+        self.assertEqual(client.resolve_calendar("O2 – Prestations"), "newcalendarid")
+        self.assertEqual(len(calendars.created), 1)
+
+    def test_creation_can_be_withheld(self):
+        client, calendars = self._client([])
         with self.assertRaises(CalendarAPIError):
-            client.resolve_calendar("O2 – Prestations")
+            client.resolve_calendar("O2 – Prestations", create=False)
         self.assertEqual(calendars.created, [])
+
+    def test_forbidden_listing_is_distinguishable_from_an_empty_list(self):
+        # Conflating the two is what produced the duplicate-calendar bug.
+        allowed, _ = self._client([])
+        self.assertIsNone(allowed.find_calendar_by_name("O2 – Prestations"))
+
+        denied, _ = self._client([], error=http_error(403))
+        with self.assertRaises(gcal.DiscoveryNotPermitted):
+            denied.find_calendar_by_name("O2 – Prestations")
 
     def test_other_listing_errors_are_not_swallowed(self):
         client, _ = self._client([], error=http_error(500))

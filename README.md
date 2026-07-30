@@ -79,10 +79,10 @@ python -m o2sync sync --from-json raw.json --dry-run   # replay a dump, no O2 lo
 python -m o2sync sync --interval 6h                    # stay alive, re-sync every 6h
 ```
 
-Same window flags as `fetch`. The target calendar comes from `--calendar-id` or
-`$O2_CALENDAR_ID` — run [`calendar-init`](#calendar-init--create-the-calendar-once)
-once to get it. `--interval` turns this into a long-running loop, see
-[Running it on a schedule](#running-it-on-a-schedule).
+Same window flags as `fetch`. The target calendar comes from `--calendar-id` /
+`$O2_CALENDAR_ID`, or is found by name if your credentials allow it — see
+[The calendar id](#the-calendar-id). `--interval` turns this into a long-running
+loop, see [Running it on a schedule](#running-it-on-a-schedule).
 
 ### `calendar-init` — create the calendar, once
 
@@ -99,8 +99,9 @@ python -m o2sync healthcheck   # exit 0 while the --interval loop is on schedule
 ### `auth` — one-time Google authorisation
 
 ```bash
-python -m o2sync auth              # opens a browser, stores token.json
-python -m o2sync auth --print-env  # re-print the credentials as env vars
+python -m o2sync auth                  # opens a browser, stores token.json
+python -m o2sync auth --with-discovery # also allow finding the calendar by name
+python -m o2sync auth --print-env      # re-print the credentials as env vars
 ```
 
 ## Google setup
@@ -146,7 +147,8 @@ the server reads its Google credentials from environment variables.
 Instead of steps 5–6 above:
 
 1. *Google Auth Platform → **Data Access*** → *Add or remove scopes* → paste
-   `https://www.googleapis.com/auth/calendar.app.created` and save.
+   `https://www.googleapis.com/auth/calendar.app.created` (and, to skip step 7,
+   `https://www.googleapis.com/auth/calendar.calendarlist.readonly`) and save.
 2. *Google Auth Platform → **Clients*** → *Create client* → application type
    **Web application** (not Desktop — the Playground needs a real redirect URI).
    Under *Authorised redirect URIs* add exactly:
@@ -157,19 +159,22 @@ Instead of steps 5–6 above:
    - *OAuth flow*: **Server-side**
    - *Access type*: **Offline** — without this you get no refresh token
    - tick **Use your own OAuth credentials**, and paste the client ID and secret
-4. In *Step 1*, in the "Input your own scopes" box, enter
-   `https://www.googleapis.com/auth/calendar.app.created` → **Authorize APIs**.
-   Sign in and accept (via **Advanced → Go to … (unsafe)** on the unverified-app
-   warning).
+4. In *Step 1*, in the "Input your own scopes" box, enter both scopes separated by
+   a space:
+   `https://www.googleapis.com/auth/calendar.app.created https://www.googleapis.com/auth/calendar.calendarlist.readonly`
+   → **Authorize APIs**. Sign in and accept (via **Advanced → Go to … (unsafe)** on
+   the unverified-app warning). The second scope is optional — see
+   [The calendar id](#the-calendar-id) — but with it you can skip step 7.
 5. In *Step 2*, tap **Exchange authorization code for tokens** and copy the
    **refresh token**.
 6. In Coolify's *Environment Variables*, set `O2_GOOGLE_CLIENT_ID`,
    `O2_GOOGLE_CLIENT_SECRET` and `O2_GOOGLE_REFRESH_TOKEN` to those three values,
    along with `O2_EMAIL` and `O2_PASSWORD`.
-7. Bootstrap the calendar once — in Coolify, add a **Scheduled Task** (or use the
-   container *Terminal*) running `python -m o2sync calendar-init`, and copy the
-   `O2_CALENDAR_ID=…` it prints into the environment variables too. See
-   [The calendar id](#the-calendar-id) for why this step exists. Then deploy.
+7. **Only if you skipped the `calendarlist.readonly` scope**: bootstrap the calendar
+   once — in Coolify add a **Scheduled Task** (or use the container *Terminal*)
+   running `python -m o2sync calendar-init`, and copy the `O2_CALENDAR_ID=…` it
+   prints into the environment variables. With both scopes granted, the calendar is
+   created automatically on the first sync instead. Then deploy.
 
 A Web-application client works fine here: refreshing a token only needs the client
 id, secret and refresh token, and is identical for both client types. You never
@@ -198,19 +203,36 @@ you made by hand; let it create its own.
 
 `calendar.app.created` lets this tool **create** a calendar but not **list** any:
 `calendarList.list` requires `calendar.readonly` / `calendar` /
-`calendar.calendarlist*`, and deliberately none of those are requested. So the tool
-cannot go looking for its own calendar by name — the id has to be recorded once:
+`calendar.calendarlist*`. So with that scope alone the tool cannot find its own
+calendar by name, and the id has to be pinned. Two ways to deal with that — both
+supported, pick one:
+
+**A. Pin the id (strictest).** Grant only `calendar.app.created`, then:
 
 ```bash
 python -m o2sync calendar-init      # prints: O2_CALENDAR_ID=…@group.calendar.google.com
 ```
 
-Set that as `O2_CALENDAR_ID` (or pass `--calendar-id`) and every later run targets it
-directly. If your credentials happen to carry a broader scope, discovery by name is
-tried first and this is optional.
+Set that as `O2_CALENDAR_ID` (or pass `--calendar-id`). The app stays incapable of
+seeing that any of your other calendars exist.
 
-`sync` never creates a calendar as a fallback: with no way to find it again, it would
-make a new one on every single cycle.
+**B. Also grant `calendar.calendarlist.readonly` (simpler).** One extra scope, and
+the tool finds its calendar by name — no bootstrap command, no `O2_CALENDAR_ID`, and
+it creates the calendar by itself on first run:
+
+```bash
+python -m o2sync auth --with-discovery
+```
+
+In the Playground, enter both scopes separated by a space. The extra scope is
+read-only and covers the *calendar list* only — names, ids and colours. It grants no
+access to events in any calendar, so the guarantee that this tool cannot read your
+primary calendar's contents still holds. What you give up is that it can now see
+which calendars you own.
+
+Either way, `sync` never creates a calendar when it is not allowed to list: with no
+way to find it again it would make a new one on every cycle. That is why option A
+needs the explicit `calendar-init` step.
 
 O2 credentials are read from flags, then the environment, then `.env`, then an
 interactive prompt. Prefer the environment: command-line arguments are visible to
@@ -252,8 +274,9 @@ to stay up and own its schedule, which is what `--interval` is for. The bundled
    **Docker Compose** (the repo has a `docker-compose.yaml`).
 3. In *Environment Variables*, set `O2_EMAIL`, `O2_PASSWORD` and the three
    `O2_GOOGLE_*` values from step 1. Optionally `O2_SYNC_INTERVAL` (default `6h`).
-4. Run `python -m o2sync calendar-init` once (Coolify *Terminal*, or a one-off
-   Scheduled Task) and add the `O2_CALENDAR_ID` it prints to the environment.
+4. Unless you granted `calendar.calendarlist.readonly`, run
+   `python -m o2sync calendar-init` once (Coolify *Terminal*, or a one-off Scheduled
+   Task) and add the `O2_CALENDAR_ID` it prints to the environment.
 5. Deploy. The container should stay **running**, logging one summary line per
    cycle.
 
@@ -417,9 +440,10 @@ that isn't happening never notifies you.
 python -m unittest discover -s tests -t .
 ```
 
-90 tests, no network: normalisation, the calendar event mapping, every branch of the
+93 tests, no network: normalisation, the calendar event mapping, every branch of the
 diff engine including the deletion fences and the `409` fallback, calendar resolution
-(including refusing to create a duplicate when listing is forbidden), the scheduling
+under both scope setups (including refusing to create a duplicate when listing is
+forbidden, and never widening access to event data), the scheduling
 loop (interval parsing, surviving a transient outage, fatal-on-bad-credentials,
 `SIGTERM` shutdown, heartbeat staleness), and credential handling (wrong OAuth client
 type, corrupt token, headless machine).

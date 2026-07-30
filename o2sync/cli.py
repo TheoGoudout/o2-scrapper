@@ -239,6 +239,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_google_args(auth)
     auth.add_argument(
+        "--with-discovery",
+        action="store_true",
+        help="also request the read-only calendar-list scope, so the calendar can be found "
+        "by name instead of pinning O2_CALENDAR_ID",
+    )
+    auth.add_argument(
         "--print-env",
         action="store_true",
         help="print the stored credentials as environment variables, for deploying to a "
@@ -500,7 +506,7 @@ def cmd_auth(args: argparse.Namespace) -> int:
         print(gauth.env_block(args.token))
         return EXIT_OK
 
-    token_path = gauth.run_consent_flow(args.client_secrets, args.token)
+    token_path = gauth.run_consent_flow(args.client_secrets, args.token, args.with_discovery)
     log.info("Authorised. Token stored in %s", token_path)
     log.info("Next: python -m o2sync sync --dry-run")
     return EXIT_OK

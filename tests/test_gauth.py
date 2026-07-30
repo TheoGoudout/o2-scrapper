@@ -27,10 +27,17 @@ WEB_CLIENT = {"web": dict(DESKTOP_CLIENT["installed"])}
 
 
 class ScopeTest(unittest.TestCase):
-    def test_asks_only_for_app_created_calendars(self):
+    def test_asks_only_for_app_created_calendars_by_default(self):
         # The whole safety story rests on this: the tool must not be able to reach
         # the user's primary calendar.
         self.assertEqual(gauth.SCOPES, ["https://www.googleapis.com/auth/calendar.app.created"])
+
+    def test_discovery_adds_only_a_read_only_calendar_list_scope(self):
+        # The opt-in must never widen access to event data.
+        extra = set(gauth.SCOPES_WITH_DISCOVERY) - set(gauth.SCOPES)
+        self.assertEqual(extra, {"https://www.googleapis.com/auth/calendar.calendarlist.readonly"})
+        for scope in gauth.SCOPES_WITH_DISCOVERY:
+            self.assertTrue(scope.endswith(("app.created", "readonly")), scope)
 
 
 class PathTest(unittest.TestCase):

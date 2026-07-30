@@ -4,9 +4,13 @@ Consent and use are deliberately separated. ``sync`` must be safe to run from
 cron, so it never opens a browser: if the stored token is missing or unusable it
 raises :class:`GoogleAuthRequired` telling the user to run ``o2sync auth`` once.
 
-The requested scope is ``calendar.app.created``, which only grants access to
+The default scope is ``calendar.app.created``, which only grants access to
 calendars this application itself created. The tool therefore cannot read or
 modify the user's primary calendar — or any other one — no matter what it does.
+
+That scope cannot list calendars, so the calendar id must be pinned. Granting
+``calendar.calendarlist.readonly`` as well lifts that requirement in exchange for
+letting the app see the names and ids of your calendars (never their events).
 """
 
 from __future__ import annotations
@@ -22,7 +26,16 @@ from .errors import GoogleAuthRequired
 log = logging.getLogger(__name__)
 
 #: Least privilege: secondary calendars created by this app, and nothing else.
-SCOPES = ["https://www.googleapis.com/auth/calendar.app.created"]
+#: It does *not* allow listing calendars, so the calendar id has to be pinned.
+SCOPE_APP_CREATED = "https://www.googleapis.com/auth/calendar.app.created"
+
+#: Optional extra: read-only view of which calendars exist (names, ids, colours —
+#: never event data). Granting it lets the tool find its own calendar by name, so
+#: no O2_CALENDAR_ID has to be recorded.
+SCOPE_CALENDAR_LIST = "https://www.googleapis.com/auth/calendar.calendarlist.readonly"
+
+SCOPES = [SCOPE_APP_CREATED]
+SCOPES_WITH_DISCOVERY = [SCOPE_APP_CREATED, SCOPE_CALENDAR_LIST]
 
 ENV_CLIENT_SECRETS = "O2_GOOGLE_CLIENT_SECRETS"
 ENV_TOKEN = "O2_GOOGLE_TOKEN"
@@ -85,7 +98,9 @@ def _credentials_from_env(credentials_class):
         client_id=client_id,
         client_secret=client_secret,
         token_uri=TOKEN_URI,
-        scopes=SCOPES,
+        # Left unset on purpose: the granted scopes live in the refresh token, and
+        # naming a narrower list here would misreport what the credentials can do.
+        scopes=None,
     )
 
 
@@ -120,7 +135,9 @@ def load_credentials(client_secrets: str | None = None, token: str | None = None
         )
 
     try:
-        credentials = Credentials.from_authorized_user_file(str(token_path), SCOPES)
+        # Pass None so a token carrying extra granted scopes is still accepted;
+        # what the token may actually do is decided by Google, not by this list.
+        credentials = Credentials.from_authorized_user_file(str(token_path), None)
     except (ValueError, KeyError) as exc:
         raise GoogleAuthRequired(
             f"{token_path} is not a valid Google token file ({exc}). "
@@ -149,10 +166,16 @@ def load_credentials(client_secrets: str | None = None, token: str | None = None
     )
 
 
-def run_consent_flow(client_secrets: str | None = None, token: str | None = None) -> Path:
+def run_consent_flow(
+    client_secrets: str | None = None,
+    token: str | None = None,
+    with_discovery: bool = False,
+) -> Path:
     """Run the one-time browser consent flow and store the token.
 
-    Only ever called by the ``auth`` subcommand.
+    Only ever called by the ``auth`` subcommand. ``with_discovery`` additionally
+    requests the read-only calendar-list scope, which trades a little privacy for
+    not having to pin O2_CALENDAR_ID.
     """
     from google_auth_oauthlib.flow import InstalledAppFlow
 
@@ -179,7 +202,8 @@ def run_consent_flow(client_secrets: str | None = None, token: str | None = None
         )
 
     try:
-        flow = InstalledAppFlow.from_client_secrets_file(str(secrets_path), SCOPES)
+        scopes = SCOPES_WITH_DISCOVERY if with_discovery else SCOPES
+        flow = InstalledAppFlow.from_client_secrets_file(str(secrets_path), scopes)
     except ValueError as exc:
         # By far the most common setup mistake: creating a "Web application"
         # client instead of a "Desktop app" one.
